@@ -1,1 +1,3 @@
-# Tidak ada refleksi khusus; aturan default sudah cukup.
+# Nama kelas/fungsi tidak diacak supaya laporan crash tetap terbaca.
+-dontobfuscate
+-keepattributes SourceFile,LineNumberTable

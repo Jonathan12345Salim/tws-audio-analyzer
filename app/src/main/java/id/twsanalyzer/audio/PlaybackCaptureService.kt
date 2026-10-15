@@ -54,7 +54,14 @@ class PlaybackCaptureService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        try {
+            startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } catch (t: Throwable) {
+            Log.e(TAG, "startForeground", t)
+            AudioEngine.setError("Android menolak memulai tangkapan audio internal: ${t.message}")
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         val code = intent.getIntExtra(EXTRA_CODE, 0)
         val data = IntentCompat.getParcelableExtra(intent, EXTRA_DATA, Intent::class.java)

@@ -1,6 +1,7 @@
 package id.twsanalyzer.ui
 
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -93,13 +94,52 @@ private fun Modifier.panel() = this
     .clip(RoundedCornerShape(8.dp))
     .background(Palette.PanelBg)
 
+/** Error gambar pertama yang tertangkap (ditampilkan di tab Info, bukan membuat app crash). */
+object UiErrors {
+    @Volatile var first: String? = null
+}
+
+/**
+ * Menjalankan isi Canvas dengan aman: exception saat menggambar tidak membuat app crash,
+ * cukup panel itu yang kosong dan errornya dicatat.
+ */
+private inline fun DrawScope.guard(name: String, block: DrawScope.() -> Unit) {
+    try {
+        block()
+    } catch (t: Throwable) {
+        if (UiErrors.first == null) UiErrors.first = "$name: $t"
+        Log.e("Draw", name, t)
+    }
+}
+
+/**
+ * Teks di dalam kanvas. drawText(textMeasurer, …) bawaan Compose melempar exception jika titik awal
+ * teks berada di luar kanvas, jadi teks diukur dulu lalu posisinya dijepit ke dalam batas kanvas.
+ */
+private fun DrawScope.label(
+    tm: TextMeasurer, text: String, x: Float, y: Float,
+    style: TextStyle = labelStyle, alignEnd: Boolean = false,
+) {
+    if (size.width < 1f || size.height < 1f) return
+    val m = tm.measure(text, style)
+    val tx = (if (alignEnd) x - m.size.width else x).coerceIn(0f, max(0f, size.width - m.size.width))
+    val ty = y.coerceIn(0f, max(0f, size.height - m.size.height))
+    drawText(m, topLeft = Offset(tx, ty))
+}
+
+@Composable
+private fun rememberMeasurer() = rememberTextMeasurer(cacheSize = 48)
+
 private fun DrawScope.freqGrid(tm: TextMeasurer, fTop: Float, labels: Boolean = true) {
     val lnR = ln(fTop / 20f)
     for (hz in FREQ_MARKS) {
-        if (hz > fTop) continue
-        val x = ln(hz / 20f) / lnR * size.width
+        if (hz > fTop * 1.001f) continue
+        val x = (ln(hz / 20f) / lnR * size.width).coerceIn(0f, size.width)
         drawLine(Palette.Grid, Offset(x, 0f), Offset(x, size.height), 1f)
-        if (labels) drawText(tm, freqLabel(hz), Offset(x + 3f, size.height - 14.dp.toPx()), labelStyle)
+        if (labels) {
+            val atEnd = x > size.width - 24.dp.toPx()
+            label(tm, freqLabel(hz), if (atEnd) x - 3f else x + 3f, size.height - 14.dp.toPx(), alignEnd = atEnd)
+        }
     }
 }
 
@@ -118,7 +158,7 @@ fun PanelTitle(title: String, hint: String? = null) {
 
 @Composable
 fun SpectrumView(frame: State<AnalysisFrame?>, minDb: Float, maxDb: Float, modifier: Modifier = Modifier) {
-    val tm = rememberTextMeasurer()
+    val tm = rememberMeasurer()
     var cursor by remember { mutableStateOf<Float?>(null) }
     Canvas(
         modifier
@@ -133,7 +173,7 @@ fun SpectrumView(frame: State<AnalysisFrame?>, minDb: Float, maxDb: Float, modif
                     onDragCancel = { cursor = null },
                 ) { ch, _ -> cursor = ch.position.x }
             }
-    ) {
+    ) { guard("Spektrum") {
         val f = frame.value
         val w = size.width
         val h = size.height
@@ -146,7 +186,7 @@ fun SpectrumView(frame: State<AnalysisFrame?>, minDb: Float, maxDb: Float, modif
         while (d > minDb) {
             val yy = y(d.toFloat())
             drawLine(Palette.Grid, Offset(0f, yy), Offset(w, yy), 1f)
-            drawText(tm, "$d", Offset(3f, yy + 1f), labelStyle)
+            label(tm, "$d", 3f, yy + 1f)
             d -= step
         }
 
@@ -184,7 +224,7 @@ fun SpectrumView(frame: State<AnalysisFrame?>, minDb: Float, maxDb: Float, modif
                 drawText(m, topLeft = Offset(bx, 6f))
             }
         }
-    }
+    } }
 }
 
 // ============================================================ SPEKTROGRAM
@@ -228,30 +268,30 @@ class SpectrogramState(val cols: Int = Analyzer.POINTS, val rows: Int = 240) {
 
 @Composable
 fun SpectrogramView(state: SpectrogramState, fTop: Float, modifier: Modifier = Modifier) {
-    val tm = rememberTextMeasurer()
-    Canvas(modifier.panel()) {
+    val tm = rememberMeasurer()
+    Canvas(modifier.panel()) { guard("Spektrogram") {
         state.tick.intValue // baca agar redraw saat ada baris baru
         drawImage(
             state.image,
             srcOffset = IntOffset.Zero,
             srcSize = IntSize(state.cols, state.rows),
             dstOffset = IntOffset.Zero,
-            dstSize = IntSize(size.width.toInt(), size.height.toInt()),
+            dstSize = IntSize(size.width.toInt().coerceAtLeast(1), size.height.toInt().coerceAtLeast(1)),
             filterQuality = FilterQuality.Low,
         )
         freqGrid(tm, fTop)
-        drawText(tm, "↓ waktu (terbaru di atas)", Offset(size.width - 150.dp.toPx(), 4f), labelStyle)
-    }
+        label(tm, "↓ waktu (terbaru di atas)", size.width - 4f, 4f, alignEnd = true)
+    } }
 }
 
 // ============================================================ WAVEFORM
 
 @Composable
 fun WaveformView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) {
-    val tm = rememberTextMeasurer()
+    val tm = rememberMeasurer()
     val gains = remember { floatArrayOf(1f, 2f, 4f, 8f, 16f) }
     var gi by remember { mutableIntStateOf(0) }
-    Canvas(modifier.panel().pointerInput(Unit) { detectTapGestures(onTap = { gi = (gi + 1) % gains.size }) }) {
+    Canvas(modifier.panel().pointerInput(Unit) { detectTapGestures(onTap = { gi = (gi + 1) % gains.size }) }) { guard("Gelombang") {
         val w = size.width
         val h = size.height
         val mid = h / 2
@@ -259,7 +299,7 @@ fun WaveformView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) {
         drawLine(Palette.Grid, Offset(0f, mid), Offset(w, mid), 1f)
         drawLine(Palette.Grid, Offset(0f, mid - h / 4), Offset(w, mid - h / 4), 1f)
         drawLine(Palette.Grid, Offset(0f, mid + h / 4), Offset(w, mid + h / 4), 1f)
-        val f = frame.value ?: return@Canvas
+        val f = frame.value ?: return@guard
         fun wave(data: FloatArray, color: Color) {
             if (data.size < 2) return
             val p = Path()
@@ -274,8 +314,8 @@ fun WaveformView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) {
         if (f.stereo) wave(f.waveR, Palette.Magenta.copy(alpha = 0.7f))
         val ms = f.waveL.size * 1000f / f.sampleRate
         val txt = "×${g.toInt()} (ketuk = zoom) · ${fmt(ms)} ms" + if (f.stereo) " · L cyan / R pink" else " · mono"
-        drawText(tm, txt, Offset(4f, 4f), labelStyle)
-    }
+        label(tm, txt, 4f, 4f)
+    } }
 }
 
 // ============================================================ LEVEL METER
@@ -284,8 +324,8 @@ private const val METER_MIN = -60f
 
 @Composable
 fun LevelMeterView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) {
-    val tm = rememberTextMeasurer()
-    Canvas(modifier.panel()) {
+    val tm = rememberMeasurer()
+    Canvas(modifier.panel()) { guard("Level meter") {
         val f = frame.value
         val h = size.height
         val top = 16.dp.toPx()
@@ -297,13 +337,13 @@ fun LevelMeterView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) 
         for (db in intArrayOf(0, -3, -6, -10, -20, -30, -40, -50, -60)) {
             val yy = y(db.toFloat())
             drawLine(Palette.Grid, Offset(scaleW, yy), Offset(size.width, yy), 1f)
-            drawText(tm, "$db", Offset(2f, yy - 6.dp.toPx()), labelStyle)
+            label(tm, "$db", 2f, yy - 6.dp.toPx())
         }
         val grad = Brush.verticalGradient(
             0f to Palette.Red, 0.05f to Palette.Yellow, 0.25f to Palette.Green, 1f to Palette.Green.copy(alpha = 0.6f),
             startY = top, endY = bottom,
         )
-        fun bar(i: Int, rms: Float, pk: Float, hold: Float, clip: Boolean, label: String) {
+        fun bar(i: Int, rms: Float, pk: Float, hold: Float, clip: Boolean, name: String) {
             val x = scaleW + 8.dp.toPx() + i * (barW + 8.dp.toPx())
             drawRect(Color(0x14FFFFFF), Offset(x, top), Size(barW, bottom - top))
             val yp = y(pk)
@@ -313,12 +353,12 @@ fun LevelMeterView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) 
             val yh = y(hold)
             drawLine(Palette.Orange, Offset(x, yh), Offset(x + barW, yh), 2.dp.toPx())
             drawRect(if (clip) Palette.Red else Color(0x22FF5252), Offset(x, 0f), Size(barW, top - 4f))
-            drawText(tm, if (clip) "CLIP" else label, Offset(x + barW / 2 - 10.dp.toPx(), 0f), labelStyle.copy(color = Color.White))
+            label(tm, if (clip) "CLIP" else name, x + barW / 2 - 10.dp.toPx(), 0f, labelStyle.copy(color = Color.White))
         }
-        if (f == null) return@Canvas
+        if (f == null) return@guard
         bar(0, f.rmsDbL, f.peakDbL, f.peakHoldDbL, f.clipL, if (f.stereo) "L" else "M")
         bar(1, f.rmsDbR, f.peakDbR, f.peakHoldDbR, f.clipR, if (f.stereo) "R" else "M")
-    }
+    } }
 }
 
 @Composable
@@ -360,9 +400,9 @@ fun KV(k: String, v: String) {
 
 @Composable
 fun BandsView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) {
-    val tm = rememberTextMeasurer()
+    val tm = rememberMeasurer()
     val nameStyle = labelStyle.copy(color = Color.White, fontSize = 11.sp)
-    Canvas(modifier.panel()) {
+    Canvas(modifier.panel()) { guard("Band") {
         val f = frame.value
         val n = Bands.names.size
         val rowH = size.height / n
@@ -372,20 +412,17 @@ fun BandsView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) {
         val barW = size.width - nameW - valW
         for (i in 0 until n) {
             val y0 = i * rowH
-            drawText(tm, Bands.names[i], Offset(6f, y0 + rowH / 2 - 14.dp.toPx()), nameStyle)
-            drawText(tm, "${Bands.ranges[i]} Hz", Offset(6f, y0 + rowH / 2), labelStyle)
+            label(tm, Bands.names[i], 6f, y0 + rowH / 2 - 14.dp.toPx(), nameStyle)
+            label(tm, "${Bands.ranges[i]} Hz", 6f, y0 + rowH / 2)
             drawRect(Color(0x14FFFFFF), Offset(barX, y0 + rowH * 0.25f), Size(barW, rowH * 0.5f))
             if (f == null) continue
             val db = f.bandsDb[i]
             val t = ((db + 80f) / 80f).coerceIn(0f, 1f)
             val color = lerpColor(Palette.Cyan, Palette.Orange, i / (n - 1f))
             drawRect(color, Offset(barX, y0 + rowH * 0.25f), Size(barW * t, rowH * 0.5f))
-            drawText(
-                tm, "${fmt(db)} dB  ${fmt(f.bandsPct[i], 0)}%",
-                Offset(barX + barW + 6f, y0 + rowH / 2 - 7.dp.toPx()), nameStyle
-            )
+            label(tm, "${fmt(db)} dB  ${fmt(f.bandsPct[i], 0)}%", barX + barW + 6f, y0 + rowH / 2 - 7.dp.toPx(), nameStyle)
         }
-    }
+    } }
 }
 
 private fun lerpColor(a: Color, b: Color, t: Float) = Color(
@@ -396,9 +433,9 @@ private fun lerpColor(a: Color, b: Color, t: Float) = Color(
 
 @Composable
 fun VectorscopeView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) {
-    val tm = rememberTextMeasurer()
+    val tm = rememberMeasurer()
     val gain = remember { floatArrayOf(4f) }
-    Canvas(modifier.aspectRatio(1f).panel()) {
+    Canvas(modifier.aspectRatio(1f).panel()) { guard("Vectorscope") {
         val c = Offset(size.width / 2, size.height / 2)
         val r = min(size.width, size.height) / 2 * 0.95f
         drawCircle(Palette.Grid, r, c, style = Stroke(1f))
@@ -407,11 +444,11 @@ fun VectorscopeView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier)
         val d = r * 0.7071f
         drawLine(Palette.Grid, Offset(c.x - d, c.y - d), Offset(c.x + d, c.y + d), 1f)
         drawLine(Palette.Grid, Offset(c.x + d, c.y - d), Offset(c.x - d, c.y + d), 1f)
-        drawText(tm, "M", Offset(c.x + 3f, c.y - r), labelStyle)
-        drawText(tm, "L", Offset(c.x - d - 10f, c.y - d - 10f), labelStyle)
-        drawText(tm, "R", Offset(c.x + d + 2f, c.y - d - 10f), labelStyle)
-        drawText(tm, "S", Offset(c.x + r - 12f, c.y + 2f), labelStyle)
-        val f = frame.value ?: return@Canvas
+        label(tm, "M", c.x + 3f, c.y - r)
+        label(tm, "L", c.x - d - 10f, c.y - d - 10f)
+        label(tm, "R", c.x + d + 2f, c.y - d - 10f)
+        label(tm, "S", c.x + r - 12f, c.y + 2f)
+        val f = frame.value ?: return@guard
         var mx = 0f
         for (i in f.scopeX.indices) mx = max(mx, max(abs(f.scopeX[i]), abs(f.scopeY[i])))
         val target = 0.9f / max(mx, 0.01f)
@@ -420,27 +457,27 @@ fun VectorscopeView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier)
         val pts = ArrayList<Offset>(f.scopeX.size)
         for (i in f.scopeX.indices) pts.add(Offset(c.x + f.scopeX[i] * g, c.y - f.scopeY[i] * g))
         drawPoints(pts, PointMode.Points, Palette.Green.copy(alpha = 0.55f), 2.dp.toPx(), StrokeCap.Round)
-        if (!f.stereo) drawText(tm, "Visualizer = mono", Offset(4f, size.height - 14.dp.toPx()), labelStyle)
-    }
+        if (!f.stereo) label(tm, "Visualizer = mono", 4f, size.height - 14.dp.toPx())
+    } }
 }
 
 @Composable
 fun CorrelationView(frame: State<AnalysisFrame?>, modifier: Modifier = Modifier) {
-    val tm = rememberTextMeasurer()
-    Canvas(modifier.panel()) {
+    val tm = rememberMeasurer()
+    Canvas(modifier.panel()) { guard("Korelasi") {
         val w = size.width
         val h = size.height
         drawRect(Palette.Red.copy(alpha = 0.25f), Offset.Zero, Size(w / 2, h))
         drawRect(Palette.Green.copy(alpha = 0.25f), Offset(w / 2, 0f), Size(w / 2, h))
         drawLine(Palette.Label, Offset(w / 2, 0f), Offset(w / 2, h), 1f)
-        drawText(tm, "-1", Offset(3f, 2f), labelStyle)
-        drawText(tm, "0", Offset(w / 2 + 3f, 2f), labelStyle)
-        drawText(tm, "+1", Offset(w - 18.dp.toPx(), 2f), labelStyle)
-        val corr = frame.value?.correlation ?: return@Canvas
-        if (corr.isNaN()) return@Canvas
+        label(tm, "-1", 3f, 2f)
+        label(tm, "0", w / 2 + 3f, 2f)
+        label(tm, "+1", w - 3f, 2f, alignEnd = true)
+        val corr = frame.value?.correlation ?: return@guard
+        if (corr.isNaN()) return@guard
         val x = (corr + 1f) / 2f * w
         drawLine(if (corr < 0) Palette.Red else Palette.Green, Offset(x, 0f), Offset(x, h), 4.dp.toPx())
-    }
+    } }
 }
 
 // ============================================================ INFO
@@ -492,6 +529,10 @@ fun InfoView(f: AnalysisFrame?, status: AudioEngine.Status, device: OutputDevice
                     style = MaterialTheme.typography.labelSmall, color = Palette.Label,
                 )
             }
+        }
+        UiErrors.first?.let {
+            Spacer(Modifier.height(6.dp))
+            Text("Error tampilan (mohon kirim ke developer): $it", style = MaterialTheme.typography.labelSmall, color = Palette.Red)
         }
     }
 }
