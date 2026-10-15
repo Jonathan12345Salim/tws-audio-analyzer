@@ -14,7 +14,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import id.twsanalyzer.CrashReporter
 import id.twsanalyzer.audio.AudioEngine
 import id.twsanalyzer.audio.AudioEngine.Source
 import id.twsanalyzer.audio.OutputDeviceMonitor
@@ -59,9 +63,16 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         settings = SettingsStore(applicationContext)
         devices = OutputDeviceMonitor(applicationContext)
+        val lastCrash = CrashReporter.take(this)
 
         setContent {
             AppTheme {
+                var crashReport by remember { mutableStateOf(lastCrash) }
+                crashReport?.let { report ->
+                    CrashReportScreen(report) { crashReport = null }
+                    return@AppTheme
+                }
+
                 val st by settings.flow.collectAsState()
                 val status by AudioEngine.status.collectAsState()
                 val device by devices.current.collectAsState()

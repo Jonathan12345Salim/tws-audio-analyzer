@@ -42,6 +42,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -81,9 +82,16 @@ fun MainScreen(
     val spectro = remember { SpectrogramState() }
     val maxDb = if (settings.tiltDbPerOct > 0f) 12f else 0f
     val minDb = settings.minDb
+    val running = status.running
+    // derivedStateOf: layar tidak di-recompose tiap frame, hanya saat nilainya berubah
+    val fTop by remember { derivedStateOf { fast.value?.freqs?.last() ?: 20000f } }
 
     // Loop per-frame layar: ambil hasil analisis terbaru (hanya memicu redraw Canvas)
-    LaunchedEffect(frozen, minDb, maxDb) {
+    LaunchedEffect(frozen, minDb, maxDb, running) {
+        if (!running) {
+            fast.value = AudioEngine.latest
+            return@LaunchedEffect
+        }
         while (true) {
             withFrameNanos { }
             if (!frozen) {
@@ -101,7 +109,11 @@ fun MainScreen(
         }
     }
     // Angka teks diperbarui lebih lambat agar terbaca
-    LaunchedEffect(frozen) {
+    LaunchedEffect(frozen, running) {
+        if (!running) {
+            slow.value = AudioEngine.latest
+            return@LaunchedEffect
+        }
         while (true) {
             delay(150)
             if (!frozen) slow.value = AudioEngine.latest
@@ -138,7 +150,6 @@ fun MainScreen(
                     Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
                 }
             }
-            val fTop = fast.value?.freqs?.last() ?: 20000f
             val pm = Modifier.fillMaxWidth()
             Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
                 when (tab) {
